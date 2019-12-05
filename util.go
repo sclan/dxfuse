@@ -16,14 +16,18 @@ import (
 )
 
 const (
-	CreatedFilesDir = "/var/dxfuse/created_files"
+	ConfigFile =         "/tmp/dxfuse_config.json"
+	CreatedFilesDir =    "/var/dxfuse/created_files"
 	DatabaseFile       = "/var/dxfuse/metadata.db"
-	HttpClientPoolSize = 4
 	LogFile            = "/var/log/dxfuse.log"
+)
+
+const (
+	HttpClientPoolSize = 4
 	MaxDirSize         = 10 * 1000
 	MaxNumFileHandles  = 1000 * 1000
 	NumRetriesDefault  = 3
-	Version            = "v0.14"
+	Version            = "v0.15"
 )
 const (
 	InodeInvalid       = 0

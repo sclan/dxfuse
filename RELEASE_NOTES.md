@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.15
+
+- Improved command line invocation. You can now run:
+```
+$ /go/bin/dxfuse MOUNTPOINT PROJ1 PROJ2
+```
+
+instead of:
+
+```
+$ sudo -E /go/bin/dxfuse -uid $(id -u) -gid $(id -g) MOUNTPOINT PROJ1 PROJ2
+```
+
+
 ## v0.14
 Initializing the filesystem with a subprocess. The dxfuse program spawns a subprocess that runs
 the actual filesystem. The main program waits for the subprocess to start and then returns the status.

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -11,7 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jacobsa/fuse"
 	"github.com/jacobsa/fuse/fuseutil"
@@ -22,9 +23,10 @@ import (
 )
 
 type Config struct {
-	Mmountpoint string            `json:"mountpoint"`
+	Mountpoint string             `json:"mountpoint"`
 	DxEnv      dxda.DXEnvironment `json:"dxEnv"`
 	Options    dxfuse.Options     `json:"options"`
+	Manifest   dxfuse.Manifest    `json:"manifest"`
 }
 
 var progName = filepath.Base(os.Args[0])
@@ -42,10 +44,8 @@ func usage() {
 
 var (
 	debugFuseFlag = flag.Bool("debugFuse", false, "Tap into FUSE debugging information")
-	gid = flag.Int("gid", -1, "User group id (gid)")
 	help = flag.Bool("help", false, "display program options")
 	readOnly = flag.Bool("readOnly", false, "mount the filesystem in read-only mode")
-	uid = flag.Int("uid", -1, "User id (uid)")
 	verbose = flag.Int("verbose", 0, "Enable verbose debugging")
 	version = flag.Bool("version", false, "Print the version and exit")
 )
@@ -74,7 +74,7 @@ func initLog() *os.File {
 	return f
 }
 
-func initUidGid(uid int, gid int) (uint32,uint32) {
+func getUidGid() (uint32,uint32) {
 	// This is current the root user, because the program is run under
 	// sudo privileges. The "user" variable is used only if we don't
 	// get command line uid/gid.
@@ -84,22 +84,17 @@ func initUidGid(uid int, gid int) (uint32,uint32) {
 	}
 
 	// get the user ID
-	if uid == -1 {
-		var err error
-		uid, err = strconv.Atoi(user.Uid)
-		if err != nil {
-			panic(err)
-		}
+	uid, err := strconv.Atoi(user.Uid)
+	if err != nil {
+		panic(err)
 	}
 
 	// get the group ID
-	if gid == -1 {
-		var err error
-		gid, err = strconv.Atoi(user.Gid)
-		if err != nil {
-			panic(err)
-		}
+	gid, err := strconv.Atoi(user.Gid)
+	if err != nil {
+		panic(err)
 	}
+
 	return uint32(uid),uint32(gid)
 }
 
@@ -147,8 +142,8 @@ func fsDaemon(
 	}
 
 	logger.Printf("mounting dxfuse")
-	os.Stdout.WriteString("Ready")
-	os.Stdout.Close()
+	os.Stderr.WriteString("Ready")
+	os.Stderr.Close()
 	mfs, err := fuse.Mount(mountpoint, server, cfg)
 	if err != nil {
 		logger.Printf(err.Error())
@@ -167,11 +162,11 @@ func fsDaemon(
 }
 
 func waitForReady(readyReader *os.File, c chan string) {
-	status := make([]byte, 100)
+	status := make([]byte, 1000)
 	_, err := readyReader.Read(status)
 	if err != nil {
 		log.Printf("Reading from ready pipe: %v", err)
-		return
+		os.Exit(1)
 	}
 	c <- string(status)
 }
@@ -194,7 +189,7 @@ func parseCmdLineArgs() Config {
 	}
 	mountpoint := flag.Arg(0)
 
-	uid,gid := initUidGid(*uid, *gid)
+	uid,gid := getUidGid()
 
 	options := dxfuse.Options{
 		ReadOnly: *readOnly,
@@ -206,7 +201,7 @@ func parseCmdLineArgs() Config {
 
 	dxEnv, _, err := dxda.GetDxEnvironment()
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 
@@ -222,9 +217,9 @@ result in the filesystem freezing, or being unmounted.
 	}
 
 	return Config{
-		mountpoint : mountpoint,
-		dxEnv : dxEnv,
-		options : options,
+		Mountpoint : mountpoint,
+		DxEnv : dxEnv,
+		Options : options,
 	}
 }
 
@@ -239,7 +234,7 @@ func parseManifest(cfg Config) (*dxfuse.Manifest, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := manifest.FillInMissingFields(context.TODO(), cfg.dxEnv); err != nil {
+		if err := manifest.FillInMissingFields(context.TODO(), cfg.DxEnv); err != nil {
 			return nil, err
 		}
 		return manifest, nil
@@ -249,7 +244,7 @@ func parseManifest(cfg Config) (*dxfuse.Manifest, error) {
 		var projectIds []string
 		for i := 1; i < numArgs; i++ {
 			projectIdOrName := flag.Arg(i)
-			projId, err := lookupProject(&cfg.dxEnv, projectIdOrName)
+			projId, err := lookupProject(&cfg.DxEnv, projectIdOrName)
 			if err != nil {
 				return nil, err
 			}
@@ -259,7 +254,7 @@ func parseManifest(cfg Config) (*dxfuse.Manifest, error) {
 			projectIds = append(projectIds, projId)
 		}
 
-		manifest, err := dxfuse.MakeManifestFromProjectIds(context.TODO(), cfg.dxEnv, projectIds)
+		manifest, err := dxfuse.MakeManifestFromProjectIds(context.TODO(), cfg.DxEnv, projectIds)
 		if err != nil {
 			return nil, err
 		}
@@ -267,47 +262,86 @@ func parseManifest(cfg Config) (*dxfuse.Manifest, error) {
 	}
 }
 
-
-// check if the variable ACTUAL is set to 1.
-// This means that we need to run the filesystem inside this process
-func isActual() bool {
-	environment := os.Environ()
-	for _,kv := range(environment) {
-		if kv == "ACTUAL=1" {
-			return true
-		}
+func configFileRead(filename string) (*Config, error) {
+	payload, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
 	}
-	return false
+	var cfg Config
+	if err := json.Unmarshal(payload, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
+func configFileWrite(cfg Config, filename string) error {
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(filename, payload, 0444); err != nil {
+		return err
+	}
+	return nil
+}
+
+// This runs with root permissions
+func runAsDaemonWithRootPermisions() {
+	// read the configuration file
+	cfg, err := configFileRead(dxfuse.ConfigFile)
+	if err != nil {
+		os.Stderr.WriteString("Error, configuration file not specified")
+		os.Stderr.Close()
+		os.Exit(1)
+	}
+
+	err = fsDaemon(cfg.Mountpoint, cfg.DxEnv, cfg.Manifest, cfg.Options)
+	if err != nil {
+		os.Stderr.WriteString(err.Error())
+		os.Stderr.Close()
+		os.Exit(1)
+	}
+	return
+}
 
 func main() {
 	// parse command line options
 	flag.Usage = usage
 	flag.Parse()
-	cfg := parseCmdLineArgs()
 
-	if isActual() {
-		manifest, err := parseManifest(cfg)
-		if err != nil {
-			os.Stdout.WriteString(err.Error())
-			os.Stdout.Close()
-			os.Exit(1)
-		}
-		err = fsDaemon(cfg.mountpoint, cfg.dxEnv, *manifest, cfg.options)
-		if err != nil {
-			os.Stdout.WriteString(err.Error())
-			os.Stdout.Close()
-			os.Exit(1)
-		}
+	if flag.NArg() == 1 {
+		// running without any command line arguments
+		runAsDaemonWithRootPermisions()
 		return
 	}
 
+	// normal user.
+	// create the configuration
+	cfg := parseCmdLineArgs()
+
+	manifest, err := parseManifest(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, err.Error())
+		fmt.Fprintf(os.Stderr, "Could not parse the manifest")
+		os.Exit(1)
+	}
+	if manifest == nil {
+		fmt.Fprintf(os.Stderr, "Manifest is empty")
+		os.Exit(1)
+	}
+	cfg.Manifest = *manifest
+
+	// write to a file
+	if err := configFileWrite(cfg, dxfuse.ConfigFile); err != nil {
+		fmt.Fprintf(os.Stderr, err.Error())
+		fmt.Fprintf(os.Stderr, "Could not write configuration file into %s\n", dxfuse.ConfigFile)
+		os.Exit(1)
+	}
 
 	// Set up a pipe for the "ready" status.
 	errorReader, errorWriter, err := os.Pipe()
 	if err != nil {
-		fmt.Printf("Pipe: %v", err)
+		fmt.Fprintf(os.Stderr, "Pipe: %v", err)
 		os.Exit(1)
 	}
 	defer errorWriter.Close()
@@ -319,20 +353,18 @@ func main() {
 	//
 	progPath, err := exec.LookPath(os.Args[0])
 	if err != nil {
-		fmt.Printf("Error: couldn't find program %s", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Error: couldn't find program %s", os.Args[0])
 		os.Exit(1)
 	}
-	mountCmd := exec.Command(progPath, os.Args[1:]...)
-	mountCmd.Stdout = errorWriter
-	mountCmd.Env = append(os.Environ(), "ACTUAL=1")
+	mountCmd := exec.Command(progPath)
+	mountCmd.Stderr = errorWriter
 
 	// Start the command.
 	fmt.Println("starting fs daemon")
 	if err := mountCmd.Start(); err != nil {
-		fmt.Printf("failed to start filesystem daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to start filesystem daemon: %v\n", err)
 		os.Exit(1)
 	}
-	time.Sleep(2 * time.Second)
 
 	// Wait for the tool to say the file system is ready. In parallel, watch for
 	// the tool to fail.
