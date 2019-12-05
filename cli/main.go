@@ -22,9 +22,9 @@ import (
 )
 
 type Config struct {
-	mountpoint string
-	dxEnv dxda.DXEnvironment
-	options dxfuse.Options
+	Mmountpoint string            `json:"mountpoint"`
+	DxEnv      dxda.DXEnvironment `json:"dxEnv"`
+	Options    dxfuse.Options     `json:"options"`
 }
 
 var progName = filepath.Base(os.Args[0])

@@ -50,11 +50,11 @@ type DxDownloadURL struct {
 }
 
 type Options struct {
-	ReadOnly            bool
-	Verbose             bool
-	VerboseLevel        int
-	Uid                 uint32
-	Gid                 uint32
+	ReadOnly            bool   `json:"readOnly"`
+	Verbose             bool   `json:"verbose"`
+	VerboseLevel        int    `json:"verboseLevel"`
+	Uid                 uint32 `json:"uid"`
+	Gid                 uint32 `json:"gid"`
 }
 
 
