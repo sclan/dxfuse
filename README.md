@@ -118,7 +118,7 @@ go get golang.org/x/sync/semaphore
 go install github.com/google/subcommands
 go get github.com/dnanexus/dxda
 go install github.com/dnanexus/dxda
-go install github.com/dnanexus/dxda/cmd/dx-download-
+go install github.com/dnanexus/dxda/cmd/dx-download-agent
 ```
 
 Assuming the go directory is `/go`, clone the code with:
